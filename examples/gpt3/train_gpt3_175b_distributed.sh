@@ -4,40 +4,32 @@
 
 export CUDA_DEVICE_MAX_CONNECTIONS=1
 
-# GPUS_PER_NODE=2
-# Change for multinode config
-# MASTER_ADDR=172.28.23.119
+# These are set by SLURM and exported by the wrapper
+: "${GPUS_PER_NODE:?GPUS_PER_NODE not set}"
+: "${NUM_NODES:?NUM_NODES not set}"
+: "${NODE_RANK:?NODE_RANK not set}"
+: "${MASTER_ADDR:?MASTER_ADDR not set}"
 MASTER_PORT=12345
-# NUM_NODES=2
-WORLD_SIZE=$(($GPUS_PER_NODE*$NUM_NODES))
 
-CHECKPOINT_PATH=/projects/beis/kli44/ckpt
-TENSORBOARD_LOGS_PATH=/projects/beis/kli44/tensorboard
-VOCAB_FILE=/projects/beis/kli44/oscar/gpt2-vocab.json
-MERGE_FILE=/projects/beis/kli44/oscar/gpt2-merges.txt
-DATA_PATH=/projects/beis/kli44/meg-gpt2_text_document
-
-DISTRIBUTED_ARGS=(
-    --nproc_per_node $GPUS_PER_NODE 
-    --nnodes $NUM_NODES 
-    --node_rank $NODE_RANK
-    --master_addr $MASTER_ADDR 
-    --master_port $MASTER_PORT
-)
+CHECKPOINT_PATH=/projects/beis/akanodia/ckpt
+TENSORBOARD_LOGS_PATH=/projects/beis/akanodia/tensorboard
+VOCAB_FILE=/projects/beis/akanodia/oscar/gpt2-vocab.json
+MERGE_FILE=/projects/beis/akanodia/oscar/gpt2-merges.txt
+DATA_PATH=/projects/beis/akanodia/meg-gpt2_text_document
 
 GPT_MODEL_ARGS=(
-    --num-layers 8 
-    --hidden-size 512 
-    --num-attention-heads 8 
-    --seq-length 256
-    --max-position-embeddings 1024 
-    --attention-backend auto # Can use (flash/fused/unfused/local)
+    --num-layers 4 
+    --hidden-size 256 
+    --num-attention-heads 4 
+    --seq-length 128
+    --max-position-embeddings 512 
+    --attention-backend auto
 )
 
 TRAINING_ARGS=(
     --micro-batch-size 4 
-    --global-batch-size 64 
-    --train-iters 3 
+    --global-batch-size 16 
+    --train-iters 50 
     --weight-decay 0.1 
     --adam-beta1 0.9 
     --adam-beta2 0.95 
@@ -53,8 +45,8 @@ TRAINING_ARGS=(
 )
 
 MODEL_PARALLEL_ARGS=(
-	--tensor-model-parallel-size 2 
-	--pipeline-model-parallel-size 1 
+    --tensor-model-parallel-size 1
+    --pipeline-model-parallel-size 1 
 )
 
 DATA_ARGS=(
@@ -66,24 +58,29 @@ DATA_ARGS=(
 
 EVAL_AND_LOGGING_ARGS=(
     --log-interval 1
-    --save-interval 1000 
-    --eval-interval 1000 
-    --eval-iters 0
+    --save-interval 100 
+    --eval-interval 100
+    --eval-iters 5
     --tensorboard-dir $TENSORBOARD_LOGS_PATH 
 )
 
 rm -rf $CHECKPOINT_PATH
-mkdir $CHECKPOINT_PATH
+mkdir -p $CHECKPOINT_PATH
 
-echo 'Starting training...'
-
-torchrun ${DISTRIBUTED_ARGS[@]} pretrain_gpt.py \
-    ${GPT_MODEL_ARGS[@]} \
-    ${TRAINING_ARGS[@]} \
-    ${MODEL_PARALLEL_ARGS[@]} \
-    ${DATA_ARGS[@]} \
-    ${EVAL_AND_LOGGING_ARGS[@]}
-
-echo 'done training...'
+# Call torchrun with proper SLURM environment variables
+PYTHONUNBUFFERED=1 \
+TORCH_DISTRIBUTED_DEBUG=DETAIL \
+python -m torch.distributed.run \
+    --nproc_per_node=$GPUS_PER_NODE \
+    --nnodes=$NUM_NODES \
+    --node_rank=$NODE_RANK \
+    --master_addr=$MASTER_ADDR \
+    --master_port=$MASTER_PORT \
+    pretrain_gpt.py \
+    "${GPT_MODEL_ARGS[@]}" \
+    "${TRAINING_ARGS[@]}" \
+    "${MODEL_PARALLEL_ARGS[@]}" \
+    "${DATA_ARGS[@]}" \
+    "${EVAL_AND_LOGGING_ARGS[@]}"
 
 rm -rf $CHECKPOINT_PATH

@@ -10,6 +10,7 @@ import torch
 import torch.distributed
 from torch import Tensor
 
+from megatron.lora import LoRALinear
 from megatron.core import parallel_state, tensor_parallel
 from megatron.core.dist_checkpointing.mapping import ShardedStateDict
 from megatron.core.dist_checkpointing.utils import apply_prefix_mapping
@@ -37,6 +38,10 @@ logger = logging.getLogger(__name__)
 def get_transformer_layer_offset(config: TransformerConfig, vp_stage: Optional[int] = None):
     """Get the index offset of current pipeline stage, given the level of pipelining."""
     pipeline_rank = parallel_state.get_pipeline_model_parallel_rank()
+    if not parallel_state.is_inside_encoder():
+        pp_decoder_start = parallel_state.get_pipeline_model_parallel_decoder_start()
+        if pp_decoder_start is not None:
+            pipeline_rank = pipeline_rank - pp_decoder_start
 
     if config.pipeline_model_parallel_size > 1:
 
@@ -82,12 +87,6 @@ def get_transformer_layer_offset(config: TransformerConfig, vp_stage: Optional[i
                 - num_layers_in_last_pipeline_stage
             )
 
-            middle_pipeline_rank = (
-                pipeline_rank
-                if config.num_layers_in_first_pipeline_stage is None
-                else pipeline_rank - 1
-            )
-
             if (vp_size := config.virtual_pipeline_model_parallel_size) is not None:
                 assert (
                     vp_stage is not None
@@ -127,7 +126,7 @@ def get_transformer_layer_offset(config: TransformerConfig, vp_stage: Optional[i
                     offset = (
                         vp_stage * total_virtual_chunks
                         + num_layers_per_virtual_model_chunk_in_first_pipeline_stage
-                        + middle_pipeline_rank
+                        + (pipeline_rank - 1)
                         * (
                             num_layers_per_vritual_model_chunk_in_middle_pipeline_stage
                             // middle_pipeline_stages
@@ -138,6 +137,12 @@ def get_transformer_layer_offset(config: TransformerConfig, vp_stage: Optional[i
                     num_layers_per_pipeline_rank = middle_num_layers // middle_pipeline_stages
                 else:
                     num_layers_per_pipeline_rank = 0
+
+                middle_pipeline_rank = (
+                    pipeline_rank
+                    if config.num_layers_in_first_pipeline_stage is None
+                    else pipeline_rank - 1
+                )
 
                 if pipeline_rank == 0:
                     offset = 0
@@ -270,6 +275,20 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
         vp_stage: Optional[int] = None,
     ):
         super().__init__(config=config)
+        #LoRA setup 
+        from megatron.training import get_args
+        self.args = get_args()
+        if self.args.enable_lora:
+            r = self.args.lora_rank
+            a  = self.args.lora_alpha
+            dr = self.args.lora_dropout
+            hid = self.config.hidden_size
+
+            # instantiate adapters for Q, K, V, and the attention output
+            self.lora_q   = LoRALinear(hid, hid, r=r, alpha=a, dropout_p=dr)
+            self.lora_k   = LoRALinear(hid, hid, r=r, alpha=a, dropout_p=dr)
+            self.lora_v   = LoRALinear(hid, hid, r=r, alpha=a, dropout_p=dr)
+            self.lora_out = LoRALinear(hid, hid, r=r, alpha=a, dropout_p=dr)
 
         # Enable cuda graphs.
         if config.enable_cuda_graph or config.external_cuda_graph:
@@ -523,6 +542,12 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
             )
         nvtx_range_pop(suffix="self_attn_bda")
 
+        #LoRA injection 
+        if self.args.enable_lora:
+            # apply the low-rank update on the post-attention hidden states
+            lora_delta = self.lora_out(hidden_states)
+            hidden_states = hidden_states + lora_delta
+        
         # Residual connection.
         residual = hidden_states
 
@@ -578,7 +603,6 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
             self.config.mlp_chunks_for_prefill > 1
             and inference_context is not None
             and not inference_context.is_decode_only()
-            and not isinstance(self.mlp, IdentityOp)
         )
 
         if self.recompute_mlp:

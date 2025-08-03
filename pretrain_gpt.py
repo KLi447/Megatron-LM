@@ -9,7 +9,8 @@ import torch
 from functools import partial
 from typing import List, Optional, Tuple, Union
 from megatron.core import parallel_state
-from megatron.training import get_args
+from megatron.training import get_args, print_rank_0
+from megatron.lora import LoRALinear
 from megatron.training import inprocess_restart
 from megatron.training import print_rank_0
 from megatron.training import get_timers
@@ -44,7 +45,7 @@ from megatron.training.datasets.sft_dataset import SFTDataset
 
 import megatron.legacy.model  # isort: skip
 
-# NOTE: Loading `megatron.legacy.model` earlier fails due to circular import
+from megatron.core.models.gpt.gpt_model import print_layer_times, print_memory_deltas
 
 try:
     from megatron.post_training.arguments import add_modelopt_args, modelopt_args_enabled
@@ -56,40 +57,6 @@ except ImportError:
     has_nvidia_modelopt = False
 
 stimer = StragglerDetector()
-
-
-def _get_transformer_layer_spec(use_te, config):
-    """Get transformer layer specification based on configuration.
-    
-    Args:
-        use_te (bool): Whether to use Transformer Engine
-        args: Training arguments
-        config: Model configuration
-        
-    Returns:
-        transformer_layer_spec: The transformer layer specification
-    """
-    args = get_args()
-    if use_te:
-        return get_gpt_layer_with_transformer_engine_spec(
-            args.num_experts,
-            args.moe_grouped_gemm,
-            args.qk_layernorm,
-            args.multi_latent_attention,
-            args.moe_use_legacy_grouped_gemm,
-            qk_l2_norm=args.qk_l2_norm,
-            use_kitchen=config.use_kitchen,
-        )
-    else:
-        return get_gpt_layer_local_spec(
-            args.num_experts,
-            args.moe_grouped_gemm,
-            args.qk_layernorm,
-            args.multi_latent_attention,
-            args.moe_use_legacy_grouped_gemm,
-            normalization=args.normalization,
-            use_kitchen=config.use_kitchen,
-        )
 
 
 def model_provider(
@@ -151,6 +118,7 @@ def model_provider(
             pre_process=pre_process,
             post_process=post_process,
         )
+
     else:  # using core models
         if args.spec is not None:
             transformer_layer_spec = import_module(args.spec)
@@ -164,17 +132,28 @@ def model_provider(
                 transformer_layer_spec = get_gpt_heterogeneous_layer_spec(config, use_te)
             else:
                 # Define the decoder layer spec
-                transformer_layer_spec = _get_transformer_layer_spec(use_te, config)
+                if use_te:
+                    transformer_layer_spec = get_gpt_layer_with_transformer_engine_spec(
+                        args.num_experts,
+                        args.moe_grouped_gemm,
+                        args.qk_layernorm,
+                        args.multi_latent_attention,
+                        args.moe_use_legacy_grouped_gemm,
+                        qk_l2_norm=args.qk_l2_norm
+                    )
+                else:
+                    transformer_layer_spec = get_gpt_layer_local_spec(
+                        args.num_experts,
+                        args.moe_grouped_gemm,
+                        args.qk_layernorm,
+                        args.multi_latent_attention,
+                        args.moe_use_legacy_grouped_gemm,
+                        normalization=args.normalization,
+                    )
         mtp_block_spec = None
         if args.mtp_num_layers is not None:
-            if hasattr(transformer_layer_spec, 'layer_specs') and len(transformer_layer_spec.layer_specs) == 0:
-                # Get the decoder layer spec explicitly if no decoder layer in the last stage,
-                # Only happens with block spec (TransformerBlockSubmodules) when using MoE.
-                transformer_layer_spec_for_mtp = _get_transformer_layer_spec(use_te, config)
-            else:
-                transformer_layer_spec_for_mtp = transformer_layer_spec
             mtp_block_spec = get_gpt_mtp_block_spec(
-                config, transformer_layer_spec_for_mtp, use_transformer_engine=use_te, vp_stage=vp_stage
+                config, transformer_layer_spec, use_transformer_engine=use_te, vp_stage=vp_stage
             )
 
         model = GPTModel(
@@ -194,6 +173,12 @@ def model_provider(
             mtp_block_spec=mtp_block_spec,
             vp_stage=vp_stage,
         )
+    
+    if args.enable_lora:
+        for name, param in model.named_parameters():
+            param.requires_grad = 'lora_' in name
+        trainable = [n for n, p in model.named_parameters() if p.requires_grad]
+        print_rank_0(f">>> LoRA trainable parameters: {trainable}")
 
     return model
 
@@ -390,4 +375,7 @@ if __name__ == "__main__":
         args_defaults={'tokenizer_type': 'GPT2BPETokenizer'},
         extra_args_provider=add_modelopt_args if has_nvidia_modelopt else None,
         store=store,
-    )
+    )    
+    if torch.distributed.get_rank() == 0:
+        print_layer_times()  # Print layer times after training
+        print_memory_deltas()
