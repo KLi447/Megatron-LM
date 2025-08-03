@@ -1,0 +1,18 @@
+
+
+<Llama3.1-8b setup>
+pip install -U "huggingface_hub[cli]"
+# huggingface-cli login #login
+huggingface-cli download meta-llama/Meta-Llama-3.1-8B --local-dir ./llama-3.1-8b-files --local-dir-use-symlinks False
+wget https://huggingface.co/bigscience/misc-test-data/resolve/main/stas/oscar-1GB.jsonl.xz
+xz -d oscar-1GB.jsonl.xz
+# need to chunk the dataset, some entries are longer than context length of Llama3
+pip install transformers
+python3 Megatron-LM/tools/preprocess_data.py \
+    --input ./oscar/oscar-1GB-chunked.jsonl \
+    --output-prefix meg-llama \
+    --tokenizer-type HuggingFaceTokenizer \
+    --tokenizer-model /home/jovyan/shared/KLi44/shared/llama-3.1-8b-files \
+    --append-eod \
+    --workers 8
+bash examples/llama/train_llama3_8b_saturn.sh     "checkpoints/llama3_8b_fp8"     "tensorboard_logs/llama3_8b_fp8"     "/home/jovyan/shared/KLi44/shared/llama-3.1-8b-files/"     "/home/jovyan/shared/KLi44/shared/meg-llama_text_document"
