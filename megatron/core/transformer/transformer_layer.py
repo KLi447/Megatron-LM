@@ -30,11 +30,9 @@ from megatron.core.utils import (
     nvtx_range_pop,
     nvtx_range_push,
 )
+from megatron.lora import LoRALinear
 
 logger = logging.getLogger(__name__)
-
-from peft import get_peft_model, LoraConfig, TaskType
-from megatron.training import get_args
 
 
 def get_transformer_layer_offset(config: TransformerConfig, vp_stage: Optional[int] = None):
@@ -273,6 +271,7 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
         vp_stage: Optional[int] = None,
     ):
         super().__init__(config=config)
+        from megatron.training.global_vars import get_args
 
         # Enable cuda graphs.
         if config.enable_cuda_graph or config.external_cuda_graph:
@@ -333,6 +332,17 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
             layer_number=self.layer_number,
             **attention_optional_kwargs,
         )
+
+        # ─── LoRA adapters (use Megatron’s built-in) ────────────────────
+        args = get_args()
+        if args.enable_lora:
+            r, a, dr = args.lora_rank, args.lora_alpha, args.lora_dropout
+            hid = self.config.hidden_size
+            # attach low-rank adapters to Q, K, V, and the final projection
+            self.lora_q   = LoRALinear(hid, hid, r=r, alpha=a, dropout_p=dr)
+            self.lora_k   = LoRALinear(hid, hid, r=r, alpha=a, dropout_p=dr)
+            self.lora_v   = LoRALinear(hid, hid, r=r, alpha=a, dropout_p=dr)
+            self.lora_out = LoRALinear(hid, hid, r=r, alpha=a, dropout_p=dr)
 
         # [Module 3: BiasDropoutFusion]
         self.self_attn_bda = build_module(submodules.self_attn_bda)
@@ -407,19 +417,6 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
 
                 if not isinstance(self.mlp, MoELayer):
                     self.recompute_mlp = True
-
-        # ─── LoRA adapter init (only once per layer) ────────────────────────
-        args = get_args()
-        if args.enable_lora and args.lora_rank > 0 and not hasattr(self, "lora_adapter"):
-            lora_config = LoraConfig(
-                r=args.lora_rank,
-                lora_alpha=args.lora_alpha,
-                target_modules=args.lora_target_modules.split(","),
-                lora_dropout=args.lora_dropout,
-                bias="none",
-                task_type=TaskType.CAUSAL_LM,
-            )
-            self.lora_adapter = get_peft_model(self, lora_config)
 
         # @jcasper how should we handle nvfuser?
         # Set bias+dropout+add fusion grad_enable execution handler.
@@ -538,6 +535,10 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
                 attention_output_with_bias, residual, self.hidden_dropout
             )
         nvtx_range_pop(suffix="self_attn_bda")
+
+        # ─── apply the low-rank out-projection delta ───
+        if hasattr(self, "lora_out"):
+            hidden_states = hidden_states + self.lora_out(hidden_states)
 
         # Residual connection.
         residual = hidden_states

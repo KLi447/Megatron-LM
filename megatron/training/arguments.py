@@ -493,8 +493,8 @@ def validate_args(args, defaults={}):
                 args.global_batch_size), flush=True)
     assert args.global_batch_size > 0
 
-   # === LoRA sanity checks ===
-   if args.enable_lora:
+    # === LoRA sanity checks ===
+    if args.enable_lora:
         # require sane hyperparameters
         assert args.lora_rank > 0,   "--lora-rank must be > 0 when LoRA is enabled"
         assert args.lora_alpha > 0.0, "--lora-alpha must be > 0 when LoRA is enabled"

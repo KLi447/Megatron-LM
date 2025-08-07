@@ -6,7 +6,7 @@ import os
 import sys
 import torch
 
-from megatron.core import Timers
+from megatron.core.timers import Timers
 from megatron.core.config import set_experimental_flag
 from megatron.core.energy_monitor import EnergyMonitor
 from megatron.core.num_microbatches_calculator import init_num_microbatches_calculator, unset_num_microbatches_calculator
