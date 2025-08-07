@@ -79,6 +79,42 @@ def add_megatron_arguments(parser: argparse.ArgumentParser):
     parser = _add_kitchen_quantization_arguments(parser)
     parser = _add_sft_args(parser)
 
+    parser.add_argument(
+        '--enable-lora',
+        action='store_true',
+        help='Enable Low‑Rank Adaptation (LoRA) adapters'
+    )
+    parser.add_argument(
+        '--lora-rank',
+        type=int,
+        default=8,
+        help='Rank (r) of the LoRA adapter'
+    )
+    parser.add_argument(
+        '--lora-alpha',
+        type=float,
+        default=1.0,
+        help='Alpha scaling factor (α) for the LoRA update'
+    )
+    parser.add_argument(
+        '--lora-dropout',
+        type=float,
+        default=0.0,
+        help='Dropout probability on LoRA adapter inputs'
+    )
+    parser.add_argument(
+        '--lora-target-modules',
+        type=str,
+        default='query,key,value',
+        help='Comma-separated substrings of module names to apply LoRA to (default: query,key,value)'
+    )
+    parser.add_argument(
+        '--lora-path',
+        type=str,
+        default=None,
+        help='path to a pretrained LoRA adapter checkpoint (will be merged at startup)'
+    )
+
     return parser
 
 def parse_args(extra_args_provider=None, ignore_unknown_args=False):
@@ -456,6 +492,21 @@ def validate_args(args, defaults={}):
             print('setting global batch size to {}'.format(
                 args.global_batch_size), flush=True)
     assert args.global_batch_size > 0
+
+   # === LoRA sanity checks ===
+   if args.enable_lora:
+        # require sane hyperparameters
+        assert args.lora_rank > 0,   "--lora-rank must be > 0 when LoRA is enabled"
+        assert args.lora_alpha > 0.0, "--lora-alpha must be > 0 when LoRA is enabled"
+        assert 0.0 <= args.lora_dropout < 1.0, \
+            "--lora-dropout must be in [0.0, 1.0)"
+        # ensure user picks at least one target module
+        assert args.lora_target_modules, "--lora-target-modules must be non-empty when LoRA is enabled"
+        # optional: if loading a LoRA checkpoint, confirm file exists
+        if args.lora_path:
+            import os
+            assert os.path.isfile(args.lora_path), \
+                f"LoRA adapter file not found: {args.lora_path}"
 
     # Uneven virtual pipeline parallelism
     assert (

@@ -33,6 +33,9 @@ from megatron.core.utils import (
 
 logger = logging.getLogger(__name__)
 
+from peft import get_peft_model, LoraConfig, TaskType
+from megatron.training import get_args
+
 
 def get_transformer_layer_offset(config: TransformerConfig, vp_stage: Optional[int] = None):
     """Get the index offset of current pipeline stage, given the level of pipelining."""
@@ -404,6 +407,19 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
 
                 if not isinstance(self.mlp, MoELayer):
                     self.recompute_mlp = True
+
+        # ─── LoRA adapter init (only once per layer) ────────────────────────
+        args = get_args()
+        if args.enable_lora and args.lora_rank > 0 and not hasattr(self, "lora_adapter"):
+            lora_config = LoraConfig(
+                r=args.lora_rank,
+                lora_alpha=args.lora_alpha,
+                target_modules=args.lora_target_modules.split(","),
+                lora_dropout=args.lora_dropout,
+                bias="none",
+                task_type=TaskType.CAUSAL_LM,
+            )
+            self.lora_adapter = get_peft_model(self, lora_config)
 
         # @jcasper how should we handle nvfuser?
         # Set bias+dropout+add fusion grad_enable execution handler.

@@ -493,6 +493,12 @@ def save_checkpoint(iteration, model, optimizer, opt_param_scheduler, num_floati
                                                          validate_access_integrity=validate_sharding_integrity,
                                                          preprocess_common_before_consistancy_check=preprocess_common_state_dict_fn,
                                                          content_metadata=sharded_sd_metadata)
+            # ─── Save LoRA adapter weights ───
+            if args.lora_dim > 0 and hasattr(model, "lora_adapter"):
+                lora_state = model.lora_adapter.state_dict()
+                lora_file  = os.path.join(os.path.dirname(checkpoint_name), "lora_adapter.pt")
+                torch.save(lora_state, lora_file)
+                logger.info(f"LoRA adapter saved to {lora_file}")
             # [ModelOpt]: save sharded modelopt_state
             if has_nvidia_modelopt:
                 save_sharded_modelopt_state(model, checkpoint_name, (args.ckpt_format, 1))
@@ -506,6 +512,12 @@ def save_checkpoint(iteration, model, optimizer, opt_param_scheduler, num_floati
                 state_dict=state_dict,
                 storage_writer=fs_storage_writer,
             )
+            # ─── Save LoRA adapter weights ───
+            if args.lora_dim > 0 and hasattr(model, "lora_adapter"):
+                lora_state = model.lora_adapter.state_dict()
+                lora_file  = os.path.join(os.path.dirname(checkpoint_name), "lora_adapter.pt")
+                torch.save(lora_state, lora_file)
+                logger.info(f"LoRA adapter saved to {lora_file}")
         else:
             # [ModelOpt]: Inject modelopt_state into state_dict
             if has_nvidia_modelopt:
@@ -540,6 +552,12 @@ def save_checkpoint(iteration, model, optimizer, opt_param_scheduler, num_floati
                 # Save.
                 ensure_directory_exists(checkpoint_name)
                 torch.save(state_dict, checkpoint_name)
+                # ─── Save LoRA adapter weights ───
+                if args.lora_dim > 0 and hasattr(model, "lora_adapter"):
+                    lora_state = model.lora_adapter.state_dict()
+                    lora_file  = os.path.join(os.path.dirname(checkpoint_name), "lora_adapter.pt")
+                    torch.save(lora_state, lora_file)
+                    logger.info(f"LoRA adapter saved to {lora_file}")
     start_misc = time()
     if ckpt_type != CheckpointType.LOCAL:
         if not args.async_save:
@@ -1290,6 +1308,14 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, load_arg='load', 
             checkpointing_context=checkpointing_context,
         )
 
+        if 'args' in state_dict and getattr(state_dict['args'], "enable_lora", False):
+            loaded_args = state_dict['args']
+            loaded_args.enable_lora   = True
+            loaded_args.lora_dim      = args.lora_dim
+            loaded_args.lora_alpha    = args.lora_alpha
+            loaded_args.lora_dropout  = args.lora_dropout
+            state_dict['args']        = loaded_args
+
         ckpt_format = None
         if ckpt_type == CheckpointType.TORCH_DCP:
             ckpt_format = "torch_dcp"
@@ -1482,7 +1508,7 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, load_arg='load', 
                 load_return = module.load_state_dict(state_dict, strict=False)
                 print(f"load_return: {load_return}")
     # Model.
-    strict = False if args.retro_add_retriever else strict
+    strict = False if args.retro_add_retriever or args.enable_lora else strict
     if not skip_load_to_model_and_opt:
         if len(ddp_model) == 1:
             load_model_state_dict(ddp_model[0], state_dict['model'], strict)
@@ -1493,6 +1519,13 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, load_arg='load', 
                 if 'model%d' % i not in state_dict:
                     continue
                 load_model_state_dict(ddp_model[i], state_dict['model%d' % i], strict)
+
+    # ─── Load LoRA adapter weights ─────────────────────────────────────────
+    if args.enable_lora and getattr(args, "lora_path", None):
+        lora_state = torch.load(args.lora_path, map_location='cpu')
+        model.lora_adapter.load_state_dict(lora_state)
+        logging.info(f"Loaded LoRA adapter from {args.lora_path}")
+
     # Fix up query/key/value matrix ordering if needed.
     checkpoint_version = get_checkpoint_version()
     print_rank_0(f' checkpoint version {checkpoint_version}')
