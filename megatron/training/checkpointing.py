@@ -1308,6 +1308,11 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, load_arg='load', 
             checkpointing_context=checkpointing_context,
         )
 
+        # If no checkpoint was found, skip any lora‐related args reloading
+        if state_dict is None:
+            # nothing to load; return defaults (no iteration, no FLOPs)
+            return 0, 0.0
+
         if 'args' in state_dict and getattr(state_dict['args'], "enable_lora", False):
             loaded_args = state_dict['args']
             loaded_args.enable_lora   = True

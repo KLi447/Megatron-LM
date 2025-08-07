@@ -195,13 +195,16 @@ def model_provider(
             vp_stage=vp_stage,
         )
 
-    # ─── Load base pretrained weights and freeze all but LoRA ───
-        # (Ensure you've added a --pretrained-checkpoint CLI arg)
-        state = torch.load(args.pretrained_checkpoint, map_location="cpu")
-        model.load_state_dict(state["model"], strict=False)
-        for name, param in model.named_parameters():
-            if "lora_" not in name:
-                param.requires_grad = False
+        # ─── (optional) Load & freeze a pretrained base, if given ───
+        if args.pretrained_checkpoint:
+            state = torch.load(args.pretrained_checkpoint, map_location="cpu")
+            model.load_state_dict(state["model"], strict=False)
+            # Freeze everything except LoRA adapters
+            for name, param in model.named_parameters():
+                if "lora_" not in name:
+                    param.requires_grad = False
+        else:
+            print_rank_0("⚠️  no --pretrained_checkpoint provided; not freezing any params")
 
     return model
 
