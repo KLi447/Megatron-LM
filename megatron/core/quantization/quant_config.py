@@ -43,6 +43,7 @@ The idea here is to provide an ability to define arbitrarily-complicated recipes
 friendly a way as possible.
 """
 
+from __future__ import annotations
 import fnmatch
 import logging
 from abc import ABC, abstractmethod

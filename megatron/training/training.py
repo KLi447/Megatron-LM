@@ -1325,6 +1325,23 @@ def setup_model_and_optimizer(
                 'load_checkpoint_time': timers('load-checkpoint').active_time(),
             }
         )
+
+        # ── NEW: re-freeze after load to be 100% safe ──
+        if getattr(args, "enable_lora", False):
+            from megatron.lora import freeze_non_lora_params, report_trainable_params
+            # unwrapped_model is defined earlier in this function:
+            #   unwrapped_model = unwrap_model(model)
+            # It is a list of underlying nn.Modules (one per PP virtual stage).
+            agg_frozen = agg_trainable = 0
+            for m in unwrapped_model:
+                stats = freeze_non_lora_params(m)
+                agg_frozen += int(stats.get("frozen", 0))
+                agg_trainable += int(stats.get("trainable", 0))
+            if (mpu.get_tensor_model_parallel_rank() == 0
+                and mpu.is_pipeline_first_stage()):
+                print(f"[LoRA] re-freeze after load: frozen={agg_frozen:,} trainable={agg_trainable:,}")
+                report_trainable_params(unwrapped_model[0])
+
     else:
         args.iteration = 0
         args.num_floating_point_operations_so_far = 0
@@ -2626,8 +2643,6 @@ def evaluate(
 
     timers('evaluate').stop()
     timers.log(['evaluate'])
-
-    rerun_state_machine.set_mode(rerun_mode)
 
     rerun_state_machine.set_mode(rerun_mode)
 

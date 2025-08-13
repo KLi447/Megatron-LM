@@ -1,5 +1,5 @@
 # Copyright (c) 2025, NVIDIA CORPORATION. All rights reserved.
-
+from __future__ import annotations
 import copy
 import re
 from functools import lru_cache

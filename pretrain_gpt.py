@@ -42,6 +42,12 @@ from megatron.training.utils import (
 from megatron.training.yaml_arguments import core_transformer_config_from_yaml
 from megatron.training.datasets.sft_dataset import SFTDataset
 
+from megatron.lora import (
+    freeze_non_lora_params,
+    report_trainable_params,
+    layerwise_weight_norms,
+)
+
 import megatron.legacy.model  # isort: skip
 
 # NOTE: Loading `megatron.legacy.model` earlier fails due to circular import
@@ -195,16 +201,16 @@ def model_provider(
             vp_stage=vp_stage,
         )
 
-        # ─── (optional) Load & freeze a pretrained base, if given ───
-        if args.pretrained_checkpoint:
-            state = torch.load(args.pretrained_checkpoint, map_location="cpu")
-            model.load_state_dict(state["model"], strict=False)
-            # Freeze everything except LoRA adapters
+        # ─── Freeze base weights when LoRA is enabled ───
+        # Let Megatron's checkpoint loader (--load) populate tensors later;
+        # freezing flags persist across load_state_dict.
+        args = get_args()
+        if getattr(args, "enable_lora", False):
             for name, param in model.named_parameters():
-                if "lora_" not in name:
+                if "lora" not in name.lower():
                     param.requires_grad = False
         else:
-            print_rank_0("⚠️  no --pretrained_checkpoint provided; not freezing any params")
+            print_rank_0("LoRA disabled; not freezing base params.")
 
     return model
 
