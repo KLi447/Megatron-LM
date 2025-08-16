@@ -2,22 +2,33 @@ import os
 os.environ.setdefault("CUDA_DEVICE_MAX_CONNECTIONS", "1")       # satisfies Megatron assert
 os.environ.setdefault("MEGATRON_NO_GRAD_ACCUM_FUSION", "1")     # avoids Apex fused ext on build
 
-import argparse, torch, json
-import numpy as np
-
+import argparse
+import json
 import sys
+import numpy as np
+import torch
+
+# so you can run this from the repo root
 sys.path.append(os.path.abspath("."))
 
-from megatron.training import get_model, get_args
-from megatron.training.global_vars import set_args
+# Megatron-Core (MCore) / training runtime
+from megatron.training.initialize import initialize_megatron
+from megatron.training import get_model, get_args, get_tokenizer
+from megatron.training.checkpointing import load_checkpoint
+
+# Model + config
 from megatron.arguments import core_transformer_config_from_args
 from megatron.core import mpu
-from megatron.initialize import initialize_megatron
-from megatron.model import GPTModel
-from megatron.text_generation.forward_step import forward_step as generate_forward  # if present in your tree
-from megatron.text_generation_utils import generate_and_post_process  # legacy util
-from megatron.training import get_tokenizer
+from megatron.core.models.gpt.gpt_model import GPTModel
 
+# Inference (text generation) API
+from megatron.inference.text_generation.generation import (
+    generate_tokens_probs_and_return_on_first_stage as generate,
+)
+# (Optional higher-level API)
+# from megatron.inference.text_generation.api import generate_and_post_process
+
+# LoRA helpers
 from megatron.lora import (
     freeze_non_lora_params,
     report_trainable_params,
@@ -52,6 +63,13 @@ def main():
                         args_defaults={'no_load_optim': True,
                                        'no_load_rng': True})
 
+    # Only one process should write results (PP first stage, TP=0, DP=0)
+    is_writer = (
+        mpu.is_pipeline_first_stage()
+        and mpu.get_tensor_model_parallel_rank() == 0
+        and mpu.get_data_parallel_rank() == 0
+    )
+
     meg_args = get_args()
     tok = get_tokenizer()
 
@@ -68,7 +86,7 @@ def main():
         model = get_model(lambda: GPTModel(config=core_transformer_config_from_args(meg_args),
                                            num_tokentypes=0,
                                            parallel_output=False))[0]
-        iteration, _ = load_checkpoint(model, None, None, strictness=meg_args.dist_ckpt_strictness)
+        iteration, _ = load_checkpoint(model, None, None, strict=True)
 
         stats = freeze_non_lora_params(model)
         if mpu.is_pipeline_first_stage() and mpu.get_tensor_model_parallel_rank() == 0:
@@ -79,7 +97,7 @@ def main():
 
         # ------------------ NEW: one explicit forward() with proper masks ------------------
         tok = get_tokenizer()
-        device = torch.cuda.current_device() if torch.cuda.is_available() else "cpu"
+        device = torch.device("cuda", torch.cuda.current_device()) if torch.cuda.is_available() else torch.device("cpu")
 
         def _tokenize(prompt: str) -> torch.Tensor:
             ids = tok.tokenize(prompt) if hasattr(tok, "tokenize") else tok.encode(prompt)
@@ -103,15 +121,18 @@ def main():
             _ = model(_tokens, _pos, _mask, labels=None)  # logits exist only on last PP stage
 
         # Greedy generation (temp=0)
-        from megatron.text_generation.generation import generate_tokens_probs_and_return_on_first_stage as generate
         text = args.prompt
         output = generate(text, max_new_tokens=64, temperature=0.0, top_k=0, top_p=0.0)
-        results.append({'iter': int(it), 'text': text, 'output': output})
+        if output is not None:
+            results.append({'iter': int(it), 'text': text, 'output': output})
 
-    with open(args.out, 'w') as f:
-        for r in results:
-            f.write(json.dumps(r) + "\n")
-    if mpu.is_pipeline_first_stage() and mpu.get_tensor_model_parallel_rank() == 0:
+    # Optional sync so everyone reaches I/O together
+    torch.distributed.barrier()
+
+    if is_writer:
+        with open(args.out, 'w') as f:
+            for r in results:
+                f.write(json.dumps(r) + "\n")
         print(f"Wrote {len(results)} generations to {args.out}")
 
 if __name__ == "__main__":
