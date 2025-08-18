@@ -494,9 +494,7 @@ def save_checkpoint(iteration, model, optimizer, opt_param_scheduler, num_floati
                                                          preprocess_common_before_consistancy_check=preprocess_common_state_dict_fn,
                                                          content_metadata=sharded_sd_metadata)
             # ─── Save LoRA adapter weights ───
-            lora_dim = getattr(args, "lora_dim", 0)
-            lora_rank = getattr(args, "lora_rank", 0)
-            if (lora_dim > 0 or lora_rank > 0) and hasattr(model, "lora_adapter"):
+            if args.lora_dim > 0 and hasattr(model, "lora_adapter"):
                 lora_state = model.lora_adapter.state_dict()
                 lora_file  = os.path.join(os.path.dirname(checkpoint_name), "lora_adapter.pt")
                 torch.save(lora_state, lora_file)
@@ -515,9 +513,7 @@ def save_checkpoint(iteration, model, optimizer, opt_param_scheduler, num_floati
                 storage_writer=fs_storage_writer,
             )
             # ─── Save LoRA adapter weights ───
-            lora_dim = getattr(args, "lora_dim", 0)
-            lora_rank = getattr(args, "lora_rank", 0)
-            if (lora_dim > 0 or lora_rank > 0) and hasattr(model, "lora_adapter"):
+            if args.lora_dim > 0 and hasattr(model, "lora_adapter"):
                 lora_state = model.lora_adapter.state_dict()
                 lora_file  = os.path.join(os.path.dirname(checkpoint_name), "lora_adapter.pt")
                 torch.save(lora_state, lora_file)
@@ -557,9 +553,7 @@ def save_checkpoint(iteration, model, optimizer, opt_param_scheduler, num_floati
                 ensure_directory_exists(checkpoint_name)
                 torch.save(state_dict, checkpoint_name)
                 # ─── Save LoRA adapter weights ───
-                lora_dim = getattr(args, "lora_dim", 0)
-                lora_rank = getattr(args, "lora_rank", 0)
-                if (lora_dim > 0 or lora_rank > 0) and hasattr(model, "lora_adapter"):
+                if args.lora_dim > 0 and hasattr(model, "lora_adapter"):
                     lora_state = model.lora_adapter.state_dict()
                     lora_file  = os.path.join(os.path.dirname(checkpoint_name), "lora_adapter.pt")
                     torch.save(lora_state, lora_file)
@@ -1535,7 +1529,7 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, load_arg='load', 
     if args.enable_lora and getattr(args, "lora_path", None):
         lora_state = torch.load(args.lora_path, map_location='cpu')
         model.lora_adapter.load_state_dict(lora_state)
-        logger.info(f"Loaded LoRA adapter from {args.lora_path}")
+        logging.info(f"Loaded LoRA adapter from {args.lora_path}")
 
     # Fix up query/key/value matrix ordering if needed.
     checkpoint_version = get_checkpoint_version()
