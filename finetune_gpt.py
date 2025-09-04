@@ -43,6 +43,7 @@ from megatron.training.yaml_arguments import core_transformer_config_from_yaml
 from megatron.training.datasets.sft_dataset import SFTDataset
 
 import megatron.legacy.model  # isort: skip
+from megatron.core.transformer.lora import apply_lora, count_parameters
 
 # NOTE: Loading `megatron.legacy.model` earlier fails due to circular import
 
@@ -57,12 +58,14 @@ except ImportError:
 
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+##FIXME needs to work with tensor/pipeline sharded model
 def convert_hf_tinyllama_to_megatron(hf_model, target_vocab_size=None):
     """
     Converts a Hugging Face TinyLlama model to a Megatron-LM compatible state dictionary.
     This function includes the correct logic for handling Grouped-Query Attention (GQA)
     and SwiGLU MLP weights.
     """
+    tp_rank = parallel_state.get_tensor_model_parallel_rank()
     # Load the state dict and get model configuration
     hf_state_dict = hf_model.state_dict()
     config = hf_model.config
@@ -337,6 +340,32 @@ def model_provider(
         converted_weights = convert_hf_tinyllama_to_megatron(hf_tinyllama, 32128)
 
         model.load_state_dict(converted_weights, strict=False)
+
+        for param in model.parameters():
+            param.requires_grad = False
+
+        params_before = count_parameters(model)
+        print(f"--- Before LoRA ---")
+        print(f"Total parameters:     {params_before['total']:,}")
+        print(f"Trainable parameters: {params_before['trainable']:,}\n")
+
+        LORA_R1 = 8
+        LORA_R2 = 16
+        LORA_ALPHA = 16
+        TARGET_MODULES = [
+            "linear_qkv",
+            "linear_proj",
+            "linear_fc1",
+            "linear_fc2",
+        ]
+
+        apply_lora(model.decoder, TARGET_MODULES, LORA_R1, LORA_ALPHA)
+
+        params_after = count_parameters(model)
+
+        print(f"--- After LoRA ---")
+        print(f"Total parameters:     {params_after['total']:,}")
+        print(f"Trainable parameters: {params_after['trainable']:,}")
 
         test(model)
 

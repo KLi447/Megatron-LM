@@ -20,10 +20,10 @@ DATA_ARG=${4:-"MOCK"}     # Data prefix, or "MOCK"
 # mkdir -p "$(dirname "$TENSORBOARD_LOGS_PATH")"
 
 # Distributed training setup
-GPUS_PER_NODE=1
+GPUS_PER_NODE=2
 NUM_NODES=1
 NODE_RANK=0 #DELETE ME
-MASTER_ADDR=192.168.207.180
+MASTER_ADDR=gpub061.delta.ncsa.illinois.edu
 MASTER_PORT=6000
 WORLD_SIZE=$(($GPUS_PER_NODE*$NUM_NODES))
 
@@ -31,17 +31,12 @@ WORLD_SIZE=$(($GPUS_PER_NODE*$NUM_NODES))
 PRETRAIN_SCRIPT_PATH="finetune_gpt.py"
 
 # Fixed model and training parameters
-TP_SIZE=1     
+TP_SIZE=1
 CP_SIZE=1     
-PP_SIZE=1     
+PP_SIZE=1
 MICRO_BATCH_SIZE=1
-GLOBAL_BATCH_SIZE=2
-NUM_LAYERS=8  
+GLOBAL_BATCH_SIZE=16
 DTYPE="fp16"
-SEQ_LENGTH=512
-MAX_POSITION_EMBEDDINGS=512
-# SEQ_LENGTH=8192
-# MAX_POSITION_EMBEDDINGS=8192
 
 # Data cache path (useful for both mock and real data)
 DATA_CACHE_PATH="${PWD}/benchmark_cache_llama3_8b_fp8"
@@ -83,13 +78,13 @@ MODEL_ARGS=(
 TRAINING_ARGS=(
     --micro-batch-size $MICRO_BATCH_SIZE
     --global-batch-size $GLOBAL_BATCH_SIZE
-    --train-iters 5
+    --train-iters 10
     --lr-decay-iters 1
     --lr-warmup-fraction 0
     --lr 0.00015
     --min-lr 0.00001
-    --decoupled-lr 5.0e-4      # Specific to decoupled AdamW, ensure optimizer is compatible
-    --decoupled-min-lr 4.5e-5  # Specific to decoupled AdamW
+    # --decoupled-lr 5.0e-4      # Specific to decoupled AdamW, ensure optimizer is compatible
+    # --decoupled-min-lr 4.5e-5  # Specific to decoupled AdamW
     --lr-decay-style cosine
     --clip-grad 1.0
     --weight-decay 0.1
